@@ -1,0 +1,340 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r load packages}
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(ggplot2)
+library(ggpubr)
+library(ggfortify)
+library(SNFtool)
+library(data.table)
+library(RColorBrewer)
+library(plyr)
+library(vcd)
+library(UpSetR)
+library(MASS)
+library(alluvial)
+library(ggalluvial)
+```
+
+```{r load snf data}
+# File path on scc: /external/rprshnas01/kcni/mwang/rosmap/
+rosmap_path<-'C:/Users/yangmu/Desktop/rosmap/'
+Data_chipseq<-read.csv(file.path(rosmap_path,'Chipseq_ready.csv'),row.names = 1, header = TRUE)
+Data_methylation<-read.csv(file.path(rosmap_path,'Methylation_ready.csv'),row.names = 1, header = TRUE)
+Data_rnaseq<-read.csv(file.path(rosmap_path,'counts_adj_ready.csv'),row.names = 1, header = TRUE)
+Data_tmt <- read.csv(file.path(rosmap_path,'tmt_ready.csv'),row.names = 1, header = TRUE)
+Data_metabo <- read.csv(file.path(rosmap_path,'metabolon_ready.csv'),row.names = 1, header = TRUE)
+
+
+#####MODIFY DATAFRAMES################
+rnqseq_col <- rownames(Data_rnaseq)
+rnaseq_row <- colnames(Data_rnaseq)
+Data_rnaseq<-t(Data_rnaseq)
+rownames(Data_rnaseq)<- rnaseq_row
+colnames(Data_rnaseq)<- rnqseq_col
+
+methy_col <- rownames(Data_methylation)
+methy_row <- colnames(Data_methylation)
+Data_methylation<-t(Data_methylation)
+rownames(Data_methylation)<- methy_row
+colnames(Data_methylation)<- methy_col
+
+chipseq_col <- rownames(Data_chipseq)
+chipseq_row <- colnames(Data_chipseq)
+Data_chipseq<-t(Data_chipseq)
+rownames(Data_chipseq)<- chipseq_row
+colnames(Data_chipseq)<- chipseq_col
+
+tmt_col <- rownames(Data_tmt)
+tmt_row <- colnames(Data_tmt)
+Data_tmt<-t(Data_tmt)
+rownames(Data_tmt)<- tmt_row
+colnames(Data_tmt)<- tmt_col
+
+meta_col <- rownames(Data_metabo)
+meta_row <- colnames(Data_metabo)
+Data_metabo<-t(Data_metabo)
+rownames(Data_metabo)<- meta_row
+colnames(Data_metabo)<- meta_col
+
+#############Data frames are in the format of patient x features going forward##################
+```
+
+```{r define functions}
+# Function of find mode of a vector
+# if mode does not exist, return the first elemet
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+# Function of defining optimal cluster number
+est_clust <- function(x){
+  test<-estimateNumberOfClustersGivenGraph(x,NUMC = 2:8)
+  # wheather the optimal number are the same under two default methods
+  if (test[[1]]==test[[3]]){
+    test[[1]]
+  } 
+  # If not, we want the min number of the two optimal solution
+  #  but we need to consider the second best solutions
+  else if (test[[2]]==test[[4]]) {
+    min(test[[1]],test[[3]])
+  } 
+  # case when one's second best solution is the best solution of the other
+  else {
+    as.integer(Mode(test))
+  }
+}
+```
+
+
+```{r set parameters}
+#############################
+# try different settings; the medulloblastoma study use k and t up to 50
+K=40 # number of neibors
+alpha = 0.5 #hyperparameter
+T=50 #number of iteration
+#############################
+```
+
+```{r data normalization/affinity matrix}
+# Data normalization -> produce distance matrix -> affinity matrix
+## rnaseq
+# Normalize
+rnaseq_n<-standardNormalization(Data_rnaseq)
+# Distance Matrix
+rnaseq_d<-(dist2(as.matrix(rnaseq_n),as.matrix(rnaseq_n)))^(1/2)
+# affinity Matrix
+w_rnaseq<-affinityMatrix(rnaseq_d,K,alpha)
+
+## methylation
+# Normalize
+methy_n<-standardNormalization(Data_methylation)
+# Distance Matrix
+methy_d<-(dist2(as.matrix(methy_n),as.matrix(methy_n)))^(1/2)
+# affinity Matrix
+w_methy<-affinityMatrix(methy_d,K,alpha)
+
+## chipseq
+# Normalize
+chipseq_n<-standardNormalization(Data_chipseq)
+# Distance Matrix
+chipseq_d<-(dist2(as.matrix(chipseq_n),as.matrix(chipseq_n)))^(1/2)
+# affinity Matrix
+w_chipseq<-affinityMatrix(chipseq_d,K,alpha)
+
+## proteomic
+# Normalize
+prot_n<-standardNormalization(Data_tmt)
+# Distance Matrix
+prot_d<-(dist2(as.matrix(prot_n),as.matrix(prot_n)))^(1/2)
+# affinity Matrix
+w_prot<-affinityMatrix(prot_d,K,alpha)
+
+## metabolomic
+# Normalize
+metabo_n<-standardNormalization(Data_metabo)
+# Distance Matrix
+metabo_d<-(dist2(as.matrix(metabo_n),as.matrix(metabo_n)))^(1/2)
+# affinity Matrix
+w_metabo<-affinityMatrix(metabo_d,K,alpha)
+
+```
+
+
+
+```{r load regression data}
+# Load Data (which will be used in regression)
+phenotype_basic <- read.csv(file.path(rosmap_path,'phenotype_basic.csv'), header = TRUE)
+data_clinical <- read.csv(file.path(rosmap_path,'ROSMAP_clinical.csv'), header = TRUE)
+
+# setting variables for regression model
+regression <- phenotype_basic %>%
+  dplyr::select(projid,msex,age_death,pmi,apoe_genotype,
+                amyloid,tangles) %>%
+  mutate(amyloid_sqrt = sqrt(amyloid),
+         tangles_sqrt = sqrt(tangles)
+         )
+regression$msex <- as.factor(regression$msex)
+regression$apoe4 <- as.factor(ifelse(regression$apoe_genotype %in% c(24,34,44),
+                            1,0))
+
+# create a 2-column-df for mapping 2 types of ID's
+id_map <- data_clinical %>%
+  dplyr::select(projid,individualID)
+```
+
+
+```{r creat parameter space}
+# Data types: rna-seq(R), DNA-methylation(D), chip-seq(H), Proteomics(P), metabolomics(M)
+
+# define a vector of data types, which will be used to locate matrices
+d_types <- c('R','D','H','P')
+
+# Define a parameter space
+param_space <- c()
+for (i in 1:length(d_types)){
+  m <-combn(d_types,i)
+  num <- dim(m)[2]
+  for (j in 1:num){
+    param <- paste(m[,j],collapse='')
+    param_space<- append(param_space,param)
+  }
+}
+
+# size of the parameter space, which will be looped over
+space_length <-length(param_space)
+```
+
+```{r define an empty datafram to write}
+# define an empty data frame 
+param_df <- data.frame(s_type=character(),
+                 clust_num=integer(), 
+                 limit_by=character(), 
+                 sample = integer(),
+                 resonse = character(),
+                 p = numeric(),
+                 stringsAsFactors=FALSE) 
+```
+
+
+```{r actual code}
+# The first layer of loop will be performed over parameter space
+for (i in 1:space_length){
+  # sample size is limited by elements in parameter space
+  l_types <- param_space[i]
+  # separate joint datatypes ('RD' to 'R' 'D' for example)
+  p_limit <- as.vector(strsplit(l_types,'')[[1]])
+  # create a list of affinity matrices
+  w_list <- list(w_rnaseq,w_methy,w_chipseq,w_prot,w_metabo)
+  # update this list  of id based on joint datatypes
+  limit_list <- list()
+  # a parameter that locate datatypes accordingly
+  pos <- c(0,0,0,0,0)
+  # extract common patients and add position variable
+  for (i in 1:length(d_types)) {
+    if (d_types[i] %in% p_limit) {
+      # update with individual ID's
+      limit_list[[i]] <- rownames(w_list[[i]])
+      # update the position/dummy vector
+      pos[i]=1
+    }
+  }
+  # Now we do not need positions for ID's, reduce the length of the list
+  limit_list <- limit_list[!sapply(limit_list,is.null)]
+  # take intersection of the id
+  limit_id <- Reduce(intersect,limit_list)
+  # extract sample size
+  size <- length(limit_id)
+  
+  # define the sub-datatypes, which will be used for SNF (snf_types)
+  max_l <- length(p_limit)
+  # define a empty list for sub-datatype parameter space
+  limit_space <- c()
+  for (i in 1:max_l){
+    m <- combn(p_limit,i)
+    num <- dim(m)[2]
+    for (j in 1:num){
+    param <- paste(m[,j],collapse='')
+    limit_space<- append(limit_space,param)
+    }
+  }
+  # define the length of sub-datatype parameter space, looped by snf
+  limit_l <- length(limit_space)
+  print(limit_l)
+  
+  for (i in 1:limit_l){
+    # snf only tooks one joint datatype at a time
+    snf_types <- limit_space[i]
+    # seperate the joint datatype
+    limit <- strsplit(snf_types,'')[[1]]
+    # another position variable defined for snf
+    pos_sub <- c(0,0,0,0,0)
+    
+    # update position variable for sub-datatypes
+    # no need for id this time
+    for (i in 1:length(d_types)) {
+      if (d_types[i] %in% limit) {
+        pos_sub[i]=1
+      }
+    }
+    
+    # define snf inputs (list of affinity matrices)
+    snf_list <- list()
+    
+    # update snf inputs
+    for (i in 1:5){
+      if (pos_sub[i]==1){
+        #print(dim(w_list[[i]]))
+        # only took col/rows for common patients
+        snf_list[[i]] <- w_list[[i]][(row.names(w_list[[i]]) %in% limit_id),(colnames(w_list[[i]]) %in% limit_id)]
+        # reorder patients id
+        snf_list[[i]] <- snf_list[[i]][limit_id,limit_id]
+        #print(dim(snf_list[[i]]))
+      }
+    }
+    
+    # Remove null component from empty sub-position
+    snf_list <- snf_list[!sapply(snf_list,is.null)]
+    
+    # 2 cases:  datatype (no need for integration) vs multiple datatypes
+    if (sum(pos_sub) == 1){
+      # estimate optimal cluster number
+      clust_num <- est_clust(snf_list[[1]])
+      # spectral clustering and attached to ID's
+      output<-spectralClustering(snf_list[[1]],clust_num)
+      cat_var <- data.frame(individualID=limit_id,output)
+    } 
+    else{
+      # snf integration
+      snf = SNF(snf_list,K,T)
+      # estimate optimal cluster number
+      clust_num <- est_clust(snf)
+      # spectral clustering and attached to ID's
+      output<-spectralClustering(snf,clust_num)
+      cat_var <- data.frame(individualID=limit_id,output)
+    }
+    
+    # Merge SNF output to regression data
+    cat_var <- left_join(cat_var,id_map,by='individualID')
+    reg_part <- left_join(cat_var,regression,by ='projid')
+    reg_part['output']<-lapply(reg_part['output'],factor)
+    reg_part <- reg_part %>%
+      dplyr::select(amyloid_sqrt,tangles_sqrt,output)
+    
+    # set response variable
+    response <- c('amyloid','tangles')
+    for (i in 1:length(response)){
+      sum_m <-summary(aov(data = reg_part, reg_part[,i] ~ output))
+      # derive p-value
+      p_val <- sum_m[[1]]["Pr(>F)"][[1]][1]
+      # update data frame
+      new_row <- c(l_types,clust_num,snf_types,size,response[i],p_val)
+      param_df <- rbind(param_df,new_row)
+    }
+  }
+}
+
+```
+
+```{r plot result}
+colnames(param_df) <- c('limit_by','clust_num','snf_types','sample','response','p')
+param_df$snf_type <- factor(param_df$snf_type, levels = param_space)
+param_df$limit_by <- factor(param_df$limit_by, levels = param_space)
+param_df$sample <- as.numeric(param_df$sample)
+param_df$p<- as.numeric(param_df$p)
+param_df %>%
+  ggplot(aes(x = limit_by, y = -log(p), label = snf_type,color = -log(p),size = sample)) + 
+  geom_jitter(aes(size = sample)) + 
+  geom_text(vjust = 1, size = 4) +
+  facet_grid(response~.)+
+  geom_hline(aes(yintercept = -log(0.05),color = -log(p) ))+
+  theme_bw()
+
+
+```
