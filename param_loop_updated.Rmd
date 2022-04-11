@@ -85,38 +85,40 @@ T=50 #number of iteration
 #############################
 ```
 
+
 ```{r dimension reduction based on normalized matrices}
-var_methylation <- apply(Data_methylation, 2, var)
-var_methylation <- var_methylation[var_methylation>0.001]
-selected_features<-attr(var_methylation, "names")
-Data_methylation_s <- Data_methylation[,(colnames(Data_methylation) %in% selected_features)]
+########## DON'T RUN THIS CHUNK ####################
+#var_methylation <- apply(Data_methylation, 2, var)
+#var_methylation <- var_methylation[var_methylation>0.001]
+#selected_features<-attr(var_methylation, "names")
+#Data_methylation_s <- Data_methylation[,(colnames(Data_methylation) %in% selected_features)]
 
 # Reduced Distance matrix 
-methy_ns<-standardNormalization(Data_methylation_s)
-methy_ds<-(dist2(as.matrix(methy_ns),as.matrix(methy_ns)))^(1/2)
+#methy_ns<-standardNormalization(Data_methylation_s)
+#methy_ds<-(dist2(as.matrix(methy_ns),as.matrix(methy_ns)))^(1/2)
 # Non Reduced
-methy_n<-standardNormalization(Data_methylation)
-methy_d<-(dist2(as.matrix(methy_n),as.matrix(methy_n)))^(1/2)
+#methy_n<-standardNormalization(Data_methylation)
+#methy_d<-(dist2(as.matrix(methy_n),as.matrix(methy_n)))^(1/2)
 
 
 # affinity
-w_methy<-affinityMatrix(methy_d,K,alpha)
-w_methys<-affinityMatrix(methy_ds,K,alpha)
+#w_methy<-affinityMatrix(methy_d,K,alpha)
+#w_methys<-affinityMatrix(methy_ds,K,alpha)
 
 # check cluster effects
-estimateNumberOfClustersGivenGraph(w_methy,NUMC = 2:10)
-estimateNumberOfClustersGivenGraph(w_methys,NUMC = 2:10)
-cluster = spectralClustering(w_methy,3)
-s_cluster = spectralClustering(w_methys,3)
-df_for_alluv <- data.frame(cluster,s_cluster)
-alluv_ready <- df_for_alluv %>%
-  group_by(cluster,s_cluster) %>%
-  dplyr::mutate(freq=n()) %>%
-  slice(1)%>%
-  ungroup() 
-alluvial(alluv_ready[,1:2],freq=alluv_ready$freq,
-         alpha = 0.7)
-
+#estimateNumberOfClustersGivenGraph(w_methy,NUMC = 2:10)
+#estimateNumberOfClustersGivenGraph(w_methys,NUMC = 2:10)
+#cluster = spectralClustering(w_methy,3)
+#s_cluster = spectralClustering(w_methys,3)
+#df_for_alluv <- data.frame(cluster,s_cluster)
+#alluv_ready <- df_for_alluv %>%
+#  group_by(cluster,s_cluster) %>%
+#  dplyr::mutate(freq=n()) %>%
+#  slice(1)%>%
+#  ungroup() 
+#alluvial(alluv_ready[,1:2],freq=alluv_ready$freq,
+#         alpha = 0.7)
+########## DON'T RUN THIS CHUNK ####################
 ```
 
 
