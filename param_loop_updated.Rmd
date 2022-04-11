@@ -64,34 +64,17 @@ rownames(Data_metabo)<- meta_row
 colnames(Data_metabo)<- meta_col
 
 #############Data frames are in the format of patient x features going forward##################
-```
 
-```{r define functions}
-# Function of find mode of a vector
-# if mode does not exist, return the first elemet
-Mode <- function(x) {
-  ux <- unique(x)
-  ux[which.max(tabulate(match(x, ux)))]
-}
-# Function of defining optimal cluster number
-est_clust <- function(x){
-  test<-estimateNumberOfClustersGivenGraph(x,NUMC = 2:8)
-  # wheather the optimal number are the same under two default methods
-  if (test[[1]]==test[[3]]){
-    test[[1]]
-  } 
-  # If not, we want the min number of the two optimal solution
-  #  but we need to consider the second best solutions
-  else if (test[[2]]==test[[4]]) {
-    min(test[[1]],test[[3]])
-  } 
-  # case when one's second best solution is the best solution of the other
-  else {
-    as.integer(Mode(test))
-  }
-}
-```
+#############Feature Reduction for DNA-methylation data#########################
+# calculate variance for each feature (columns)
+var_methylation <- apply(Data_methylation, 2, var)
+# set a threshold of variance (look at feature numbers)
+var_methylation <- var_methylation[var_methylation>0.002]
+# feature selection
+selected_features<-attr(var_methylation, "names")
+Data_methylation <- Data_methylation[,(colnames(Data_methylation) %in% selected_features)]
 
+```
 
 ```{r set parameters}
 #############################
@@ -102,47 +85,93 @@ T=50 #number of iteration
 #############################
 ```
 
-```{r data normalization/affinity matrix}
-# Data normalization -> produce distance matrix -> affinity matrix
-## rnaseq
-# Normalize
-rnaseq_n<-standardNormalization(Data_rnaseq)
-# Distance Matrix
-rnaseq_d<-(dist2(as.matrix(rnaseq_n),as.matrix(rnaseq_n)))^(1/2)
-# affinity Matrix
-w_rnaseq<-affinityMatrix(rnaseq_d,K,alpha)
+```{r dimension reduction based on normalized matrices}
+var_methylation <- apply(Data_methylation, 2, var)
+var_methylation <- var_methylation[var_methylation>0.001]
+selected_features<-attr(var_methylation, "names")
+Data_methylation_s <- Data_methylation[,(colnames(Data_methylation) %in% selected_features)]
 
-## methylation
-# Normalize
+# Reduced Distance matrix 
+methy_ns<-standardNormalization(Data_methylation_s)
+methy_ds<-(dist2(as.matrix(methy_ns),as.matrix(methy_ns)))^(1/2)
+# Non Reduced
 methy_n<-standardNormalization(Data_methylation)
-# Distance Matrix
 methy_d<-(dist2(as.matrix(methy_n),as.matrix(methy_n)))^(1/2)
-# affinity Matrix
+
+
+# affinity
 w_methy<-affinityMatrix(methy_d,K,alpha)
+w_methys<-affinityMatrix(methy_ds,K,alpha)
 
-## chipseq
-# Normalize
-chipseq_n<-standardNormalization(Data_chipseq)
-# Distance Matrix
-chipseq_d<-(dist2(as.matrix(chipseq_n),as.matrix(chipseq_n)))^(1/2)
-# affinity Matrix
-w_chipseq<-affinityMatrix(chipseq_d,K,alpha)
+# check cluster effects
+estimateNumberOfClustersGivenGraph(w_methy,NUMC = 2:10)
+estimateNumberOfClustersGivenGraph(w_methys,NUMC = 2:10)
+cluster = spectralClustering(w_methy,3)
+s_cluster = spectralClustering(w_methys,3)
+df_for_alluv <- data.frame(cluster,s_cluster)
+alluv_ready <- df_for_alluv %>%
+  group_by(cluster,s_cluster) %>%
+  dplyr::mutate(freq=n()) %>%
+  slice(1)%>%
+  ungroup() 
+alluvial(alluv_ready[,1:2],freq=alluv_ready$freq,
+         alpha = 0.7)
 
-## proteomic
-# Normalize
-prot_n<-standardNormalization(Data_tmt)
-# Distance Matrix
-prot_d<-(dist2(as.matrix(prot_n),as.matrix(prot_n)))^(1/2)
-# affinity Matrix
-w_prot<-affinityMatrix(prot_d,K,alpha)
+```
 
-## metabolomic
-# Normalize
-metabo_n<-standardNormalization(Data_metabo)
-# Distance Matrix
-metabo_d<-(dist2(as.matrix(metabo_n),as.matrix(metabo_n)))^(1/2)
-# affinity Matrix
-w_metabo<-affinityMatrix(metabo_d,K,alpha)
+
+```{r define functions}
+# Function of find mode of a vector
+# if mode does not exist, return the first element
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Function of defining optimal cluster number
+est_clust <- function(x){
+  test<-estimateNumberOfClustersGivenGraph(x,NUMC = 2:8)
+  # If optimal cluster numbers are same under two default methods
+  if (test[[1]]==test[[3]]){
+    test[[1]]
+  } 
+  # If not, we want to use the mode of solutions, but need to avoid 
+  # the case when mode is created by second best solutions
+  else if (test[[2]]==test[[4]]) {
+    min(test[[1]],test[[3]])
+  } 
+  # calculate mode if exist
+  else if (length(unique(test)<4)){
+    as.integer(Mode(test))
+  }
+  # If mode does not exist, use the minimum number of optimal solutions
+  else {min(test[[1]],test[[3]])}
+}
+```
+
+
+```{r data normalization/distance matrix}
+# Calculate stardardized normalized matrices and distance matrices
+
+## RNA-seq
+rnaseq_d<-standardNormalization(Data_rnaseq)
+rnaseq_d<-(dist2(as.matrix(rnaseq_d),as.matrix(rnaseq_d)))^(1/2)
+
+## DNA-methylation
+methy_d<-standardNormalization(Data_methylation)
+methy_d<-(dist2(as.matrix(methy_d),as.matrix(methy_d)))^(1/2)
+
+## ChIP-seq
+chipseq_d<-standardNormalization(Data_chipseq)
+chipseq_d<-(dist2(as.matrix(chipseq_d),as.matrix(chipseq_d)))^(1/2)
+
+## Proteomics-tmt (Random forest imputed)
+prot_d<-standardNormalization(Data_tmt)
+prot_d<-(dist2(as.matrix(prot_d),as.matrix(prot_d)))^(1/2)
+
+## Metaboloics (Random forest imputed)
+metabo_d<-standardNormalization(Data_metabo)
+metabo_d<-(dist2(as.matrix(metabo_d),as.matrix(metabo_d)))^(1/2)
 
 ```
 
@@ -171,10 +200,10 @@ id_map <- data_clinical %>%
 
 
 ```{r creat parameter space}
-# Data types: rna-seq(R), DNA-methylation(D), chip-seq(H), Proteomics(P), metabolomics(M)
+# Data types: RNA-seq(R), DNA-methylation(D), ChIP-seq(H), Proteomics-tmt(P), Metabolomics(M)
 
 # define a vector of data types, which will be used to locate matrices
-d_types <- c('R','D','H','P')
+d_types <- c('R','D','H','P','M')
 
 # Define a parameter space
 param_space <- c()
@@ -193,25 +222,35 @@ space_length <-length(param_space)
 
 ```{r define an empty datafram to write}
 # define an empty data frame 
-param_df <- data.frame(s_type=character(),
-                 clust_num=integer(), 
-                 limit_by=character(), 
-                 sample = integer(),
-                 resonse = character(),
-                 p = numeric(),
+param_df <- data.frame(limit_by=character(), # given datatypes that limits sample size
+                 clust_num=integer(), # cluster number used (looped from 2 to 5)
+                 opt_est = integer(), # optimal cluster number given limit_by and snf_type
+                 snf_type=character(), # datatypes used in SNF, subset of limit_by
+                 sample = integer(), # sample size
+                 response = character(), # response variable
+                 p = numeric(), # p-value from F-test
                  stringsAsFactors=FALSE) 
 ```
 
 
 ```{r actual code}
+# create a list of distance matrices
+d_list <- list(rnaseq_d,methy_d,chipseq_d,prot_d,metabo_d)
+# define a parameter space for cluster number
+cluster_space <- c(2,3,4,5)
+# define a parameter for response variable
+response <- c('amyloid','tangles')
+# define a list of response variable + 'output'
+reg_param <- c('amyloid_sqrt','tangles_sqrt','output')
+  
+  
+  
 # The first layer of loop will be performed over parameter space
 for (i in 1:space_length){
-  # sample size is limited by elements in parameter space
+  # sample size is limited by elements in parameter space (limit_by)
   l_types <- param_space[i]
   # separate joint datatypes ('RD' to 'R' 'D' for example)
   p_limit <- as.vector(strsplit(l_types,'')[[1]])
-  # create a list of affinity matrices
-  w_list <- list(w_rnaseq,w_methy,w_chipseq,w_prot,w_metabo)
   # update this list  of id based on joint datatypes
   limit_list <- list()
   # a parameter that locate datatypes accordingly
@@ -220,7 +259,7 @@ for (i in 1:space_length){
   for (i in 1:length(d_types)) {
     if (d_types[i] %in% p_limit) {
       # update with individual ID's
-      limit_list[[i]] <- rownames(w_list[[i]])
+      limit_list[[i]] <- rownames(d_list[[i]])
       # update the position/dummy vector
       pos[i]=1
     }
@@ -270,9 +309,10 @@ for (i in 1:space_length){
     # update snf inputs
     for (i in 1:5){
       if (pos_sub[i]==1){
-        #print(dim(w_list[[i]]))
         # only took col/rows for common patients
-        snf_list[[i]] <- w_list[[i]][(row.names(w_list[[i]]) %in% limit_id),(colnames(w_list[[i]]) %in% limit_id)]
+        snf_list[[i]]<-d_list[[i]][(row.names(d_list[[i]]) %in% limit_id),(colnames(d_list[[i]]) %in% limit_id)]
+        # calculate affinity matrix
+        snf_list[[i]]<-affinityMatrix(snf_list[[i]],K,alpha)
         # reorder patients id
         snf_list[[i]] <- snf_list[[i]][limit_id,limit_id]
         #print(dim(snf_list[[i]]))
@@ -284,57 +324,67 @@ for (i in 1:space_length){
     
     # 2 cases:  datatype (no need for integration) vs multiple datatypes
     if (sum(pos_sub) == 1){
-      # estimate optimal cluster number
-      clust_num <- est_clust(snf_list[[1]])
-      # spectral clustering and attached to ID's
-      output<-spectralClustering(snf_list[[1]],clust_num)
-      cat_var <- data.frame(individualID=limit_id,output)
+      for (i in 1:length(cluster_space)){
+        clust_num = cluster_space[i]
+        # estimate optimal cluster number
+        opt_est <- est_clust(snf_list[[1]])
+        # spectral clustering and attached to ID's
+        output<-spectralClustering(snf_list[[1]],clust_num)
+        cat_var <- data.frame(individualID=limit_id,output)
+        
+        # Merge SNF output to regression data
+        cat_var <- left_join(cat_var,id_map,by='individualID')
+        reg_part <- left_join(cat_var,regression,by ='projid')
+        reg_part['output']<-lapply(reg_part['output'],factor)
+        reg_part <- reg_part[,reg_param]
+        
+        for (i in 1:length(response)){
+          # tryCatch to skip errors due to cluster size
+          tryCatch({
+            sum_m <-summary(aov(data = reg_part, reg_part[,i] ~ output))
+          # derive p-value
+          p_val <- sum_m[[1]]["Pr(>F)"][[1]][1]
+          # update data frame
+          new_row <- c(l_types,clust_num,opt_est,snf_types,size,response[i],p_val)
+          param_df[nrow(param_df)+1,] <- new_row
+          },error = function(e){})
+        }
+      }
     } 
+    
+    # multiple datatypes (SNF Required)
     else{
-      # snf integration
-      snf = SNF(snf_list,K,T)
-      # estimate optimal cluster number
-      clust_num <- est_clust(snf)
-      # spectral clustering and attached to ID's
-      output<-spectralClustering(snf,clust_num)
-      cat_var <- data.frame(individualID=limit_id,output)
-    }
-    
-    # Merge SNF output to regression data
-    cat_var <- left_join(cat_var,id_map,by='individualID')
-    reg_part <- left_join(cat_var,regression,by ='projid')
-    reg_part['output']<-lapply(reg_part['output'],factor)
-    reg_part <- reg_part %>%
-      dplyr::select(amyloid_sqrt,tangles_sqrt,output)
-    
-    # set response variable
-    response <- c('amyloid','tangles')
-    for (i in 1:length(response)){
-      sum_m <-summary(aov(data = reg_part, reg_part[,i] ~ output))
-      # derive p-value
-      p_val <- sum_m[[1]]["Pr(>F)"][[1]][1]
-      # update data frame
-      new_row <- c(l_types,clust_num,snf_types,size,response[i],p_val)
-      param_df <- rbind(param_df,new_row)
+      for (i in 1:length(cluster_space)){
+        clust_num = cluster_space[i]
+        # snf integration
+        snf = SNF(snf_list,K,T)
+        # estimate optimal cluster number
+        opt_est <- est_clust(snf)
+        # spectral clustering and attached to ID's
+        output<-spectralClustering(snf,clust_num)
+        cat_var <- data.frame(individualID=limit_id,output)
+        
+        # Merge SNF output to regression data
+        cat_var <- left_join(cat_var,id_map,by='individualID')
+        reg_part <- left_join(cat_var,regression,by ='projid')
+        reg_part['output']<-lapply(reg_part['output'],factor)
+        reg_part <- reg_part[,reg_param]
+        
+        for (i in 1:length(response)){
+          # tryCatch to skip errors due to cluster size
+          tryCatch({
+            sum_m <-summary(aov(data = reg_part, reg_part[,i] ~ output))
+          # derive p-value
+          p_val <- sum_m[[1]]["Pr(>F)"][[1]][1]
+          # update data frame
+          new_row <- c(l_types,clust_num,opt_est,snf_types,size,response[i],p_val)
+          param_df[nrow(param_df)+1,] <- new_row
+          },error = function(e){})
+        }
+      }
     }
   }
 }
-
-```
-
-```{r plot result}
-colnames(param_df) <- c('limit_by','clust_num','snf_types','sample','response','p')
-param_df$snf_type <- factor(param_df$snf_type, levels = param_space)
-param_df$limit_by <- factor(param_df$limit_by, levels = param_space)
-param_df$sample <- as.numeric(param_df$sample)
-param_df$p<- as.numeric(param_df$p)
-param_df %>%
-  ggplot(aes(x = limit_by, y = -log(p), label = snf_type,color = -log(p),size = sample)) + 
-  geom_jitter(aes(size = sample)) + 
-  geom_text(vjust = 1, size = 4) +
-  facet_grid(response~.)+
-  geom_hline(aes(yintercept = -log(0.05),color = -log(p) ))+
-  theme_bw()
-
-
+# safe tge param_df dataframe for visualization
+write.csv(param_df,"C:/Users/yangmu/Desktop/rosmap/SNF sample analysis/param_df_0411.csv", row.names = TRUE)
 ```
