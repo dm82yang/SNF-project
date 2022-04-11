@@ -8,3 +8,5 @@
 # Feature selection based on variance was conducted on DNA-methylation data only before standardizing the dataset
 #
 # The param_space_visualization file contains code to produce plot.
+
+# TO DO: save cluster information of each step in the loop
