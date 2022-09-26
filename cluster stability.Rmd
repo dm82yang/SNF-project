@@ -30,7 +30,6 @@ Data_rnaseq<-read.csv(file.path(rosmap_path,'counts_adj_ready.csv'),row.names = 
 resid_path<-'C:/Users/yangmu/Desktop/rosmap/SNF sample analysis'
 Data_chipseq<-read.csv(file.path(resid_path,'histone_resids.csv'),row.names = 1, header = TRUE)
 Data_methylation<-read.csv(file.path(resid_path,'dna_resids.csv'),row.names = 1, header = TRUE)
-#Data_rnaseq<-read.csv(file.path(resid_path,'rna_resids.csv'),row.names = 1, header = TRUE)
 Data_tmt <- read.csv(file.path(resid_path,'tmt_resids.csv'),row.names = 1, header = TRUE)
 Data_metabo <- read.csv(file.path(resid_path,'metabo_resids.csv'),row.names = 1, header = TRUE)
 
@@ -88,24 +87,16 @@ est_clust <- function(x){
 }
 ```
 
-```{r }
-# calculate variance for each feature (columns)
-var_metabo <- apply(Data_metabo, 2, var)
-var_metabo <- sort(var_metabo,decreasing = TRUE)
-
-# set a threshold of variance (look at feature numbers)
-var_metabo <- var_metabo[var_metabo>1]
-# feature selection
-selected_features<-attr(var_metabo, "names")
-Data_metabo <- Data_metabo[,(colnames(Data_metabo) %in% selected_features)]
-
-```
 
 ```{r data normalization/distance matrix}
 # Calculate stardardized normalized matrices and distance matrices
+
+# Remove empty values due to missing pmi, age_death, study or sex
 Data_methylation <- Data_methylation[complete.cases(Data_methylation), ]
 Data_chipseq <- Data_chipseq[complete.cases(Data_chipseq), ]
 Data_tmt <- Data_tmt[complete.cases(Data_tmt), ]
+
+
 ## RNA-seq
 rnaseq_s<-standardNormalization(Data_rnaseq)
 rnaseq_d<-(dist2(as.matrix(rnaseq_s),as.matrix(rnaseq_s)))^(1/2)
@@ -129,6 +120,7 @@ metabo_d<-(dist2(as.matrix(metabo_s),as.matrix(metabo_s)))^(1/2)
 ```
 
 ```{r full sample}
+# get the ids for common samples
 chipseq_row <- rownames(Data_chipseq)
 methy_row <- rownames(Data_methylation)
 meta_row <- rownames(Data_metabo)
@@ -155,6 +147,7 @@ snf = SNF(snf_list,K,T)
 
 
 ```{r get it from clvalid}
+# Clvalid function for calculating APN, AD, ADM, FOM
 stability <- function(mat, Dist=NULL, del, cluster, clusterDel, method="euclidean") {
 
   any.na <- any(is.na(mat))
@@ -217,35 +210,54 @@ stability <- function(mat, Dist=NULL, del, cluster, clusterDel, method="euclidea
 ```
 
 ```{r clvalid simulation}
+# modified on clvalid codes
+## take snf affinity matrix and number of clusters as input
 stabmeas_table <- function(snf, k) {
+
+  # Create a data frame to store stats
   measNames <- c("APN","AD","ADM","FOM")
   n <- ncol(snf)
   measures <- matrix(0,nrow=length(measNames),ncol=n)
   rownames(measures) <- measNames
-
+  
+  # perform spectral clustering on full data
   mat <- snf
   cluster <- spectralClustering(mat,k)
+  # store cluster result
   names(cluster) <- rownames(mat)
+  
+  # iteration on column removal
   for (del in 1:ncol(mat)) {
-    matDel <- mat[-del,-del]               ## matDel <- as.matrix(matDel)
+    # remove 1 individuals at a time from affinity matrix
+    matDel <- mat[-del,-del]   
+    
+    # Perform specteral clustering and stroe result
     clusterDel <- spectralClustering(matDel,k)
     names(clusterDel) <- rownames(matDel)
     cluster_input <- cluster[-del]
+    
+    # call the stability function
     stabmeas <- stability(mat, Dist=NULL, del, cluster=cluster_input, clusterDel)
+    
+    # write data
     measures["APN",del] <- measures["APN",del] + stabmeas["APN"]
     measures["AD",del]  <- measures["AD",del]  + stabmeas["AD"]
     measures["ADM",del] <- measures["ADM",del] + stabmeas["ADM"]
     #measures["FOM",del] <- measures["FOM",del] + stabmeas["FOM"]
     
   }
+  # return a table with output
   return(measures)
 }
 ```
 
 ```{r stability on diff cluster}
+# creat a table to store output
 output <- matrix(ncol=7, nrow=4)
 rownames(output) <- c("APN","AD","ADM","FOM")
 colnames(output) <- c(2:8)
+
+# perform stability analysis on each of these cluster numbers
 for (i in 2:8){
   output[,i-1] <- rowMeans(stabmeas_table(snf,i))
   print(i)
