@@ -1,0 +1,501 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r load packages}
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(ggplot2)
+library(ggpubr)
+library(ggfortify)
+library(SNFtool)
+library(data.table)
+library(RColorBrewer)
+library(plyr)
+library(vcd)
+library(UpSetR)
+library(MASS)
+library(alluvial)
+library(ggalluvial)
+```
+
+```{r load snf data}
+# File path on scc: /external/rprshnas01/kcni/mwang/rosmap/
+rosmap_path<-'C:/Users/yangmu/Desktop/rosmap/'
+Data_chipseq<-read.csv(file.path(rosmap_path,'Chipseq_ready.csv'),row.names = 1, header = TRUE)
+Data_methylation<-read.csv(file.path(rosmap_path,'Methylation_ready.csv'),row.names = 1, header = TRUE)
+Data_rnaseq<-read.csv(file.path(rosmap_path,'counts_adj_ready.csv'),row.names = 1, header = TRUE)
+Data_tmt <- read.csv(file.path(rosmap_path,'tmt_ready.csv'),row.names = 1, header = TRUE)
+Data_metabo <- read.csv(file.path(rosmap_path,'metabolon_ready_0413.csv'),row.names = 1, header = TRUE)
+
+
+#####MODIFY DATAFRAMES################
+rnaseq_col <- rownames(Data_rnaseq)
+rnaseq_row <- colnames(Data_rnaseq)
+Data_rnaseq<-t(Data_rnaseq)
+rownames(Data_rnaseq)<- rnaseq_row
+colnames(Data_rnaseq)<- rnaseq_col
+
+methy_col <- rownames(Data_methylation)
+methy_row <- colnames(Data_methylation)
+Data_methylation<-t(Data_methylation)
+rownames(Data_methylation)<- methy_row
+colnames(Data_methylation)<- methy_col
+
+chipseq_col <- rownames(Data_chipseq)
+chipseq_row <- colnames(Data_chipseq)
+Data_chipseq<-t(Data_chipseq)
+rownames(Data_chipseq)<- chipseq_row
+colnames(Data_chipseq)<- chipseq_col
+
+tmt_col <- rownames(Data_tmt)
+tmt_row <- colnames(Data_tmt)
+Data_tmt<-t(Data_tmt)
+rownames(Data_tmt)<- tmt_row
+colnames(Data_tmt)<- tmt_col
+
+meta_col <- rownames(Data_metabo)
+meta_row <- colnames(Data_metabo)
+Data_metabo<-t(Data_metabo)
+rownames(Data_metabo)<- meta_row
+colnames(Data_metabo)<- meta_col
+
+#############Data frames are in the format of patient x features going forward##################
+```
+
+```{r variance}
+#############Feature Reduction for DNA-methylation data#########################
+# calculate variance for each feature (columns)
+var_methylation <- apply(Data_methylation, 2, var)
+var_methylation <- sort(var_methylation,decreasing = TRUE)
+plot(var_methylation,ylab = "CpG Variation", xlab = "Ordered CpG Index")
+abline(h=0.002, col="red")
+title( main  = "DNA Methylation CpG Variation")
+text(200000, 0.008, "variance > 0.002 (#features = 53,932)", col="red")
+# set a threshold of variance (look at feature numbers)
+var_methylation <- var_methylation[var_methylation>0.002]
+# feature selection
+selected_features<-attr(var_methylation, "names")
+Data_methylation <- Data_methylation[,(colnames(Data_methylation) %in% selected_features)]
+
+```
+
+
+```{r import resids}
+# File path on scc: /external/rprshnas01/kcni/mwang/rosmap/
+resid_path<-'C:/Users/yangmu/Desktop/rosmap/SNF sample analysis'
+Data_chipseq<-read.csv(file.path(resid_path,'histone_resids.csv'),row.names = 1, header = TRUE)
+Data_methylation<-read.csv(file.path(resid_path,'dna_resids.csv'),row.names = 1, header = TRUE)
+#Data_rnaseq<-read.csv(file.path(resid_path,'rna_resids.csv'),row.names = 1, header = TRUE)
+Data_tmt <- read.csv(file.path(resid_path,'tmt_resids.csv'),row.names = 1, header = TRUE)
+Data_metabo <- read.csv(file.path(resid_path,'metabo_resids.csv'),row.names = 1, header = TRUE)
+
+```
+
+```{r set parameters}
+#############################
+# try different settings; the medulloblastoma study use k and t up to 50
+K=40 # number of neibors
+alpha = 0.5 #hyperparameter
+T=50 #number of iteration
+#############################
+```
+
+
+```{r define functions}
+# Function of find mode of a vector
+# if mode does not exist, return the first element
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Function of defining optimal cluster number
+est_clust <- function(x){
+  test<-SNFtool::estimateNumberOfClustersGivenGraph(x,NUMC = 2:8)
+  #print(test)
+  # If optimal cluster numbers are same under two default methods
+  if (test[[1]]==test[[3]]){
+    test[[1]]
+  } 
+  # If not, we want to use the mode of solutions, but need to avoid 
+  # the case when mode is created by second best solutions
+  else if (test[[2]]==test[[4]]) {
+    min(test[[1]],test[[3]])
+  } 
+  # calculate mode if exist
+  else if (length(unique(test)<4)){
+    as.integer(Mode(test))
+  }
+  # If mode does not exist, use the minimum number of optimal solutions
+  else {min(test[[1]],test[[3]])}
+}
+```
+
+
+```{r data normalization/distance matrix}
+# Calculate stardardized normalized matrices and distance matrices
+Data_methylation <- Data_methylation[complete.cases(Data_methylation), ]
+Data_chipseq <- Data_chipseq[complete.cases(Data_chipseq), ]
+Data_tmt <- Data_tmt[complete.cases(Data_tmt), ]
+## RNA-seq
+rnaseq_s<-standardNormalization(Data_rnaseq)
+rnaseq_d<-(dist2(as.matrix(rnaseq_s),as.matrix(rnaseq_s)))^(1/2)
+
+## DNA-methylation
+methy_s<-standardNormalization(Data_methylation)
+methy_d<-(dist2(as.matrix(methy_s),as.matrix(methy_s)))^(1/2)
+
+## ChIP-seq
+chipseq_s<-standardNormalization(Data_chipseq)
+chipseq_d<-(dist2(as.matrix(chipseq_s),as.matrix(chipseq_s)))^(1/2)
+
+## Proteomics-tmt (Random forest imputed)
+prot_s<-standardNormalization(Data_tmt)
+prot_d<-(dist2(as.matrix(prot_s),as.matrix(prot_s)))^(1/2)
+
+## Metaboloics (Random forest imputed)
+metabo_s<-standardNormalization(Data_metabo)
+metabo_d<-(dist2(as.matrix(metabo_s),as.matrix(metabo_s)))^(1/2)
+
+```
+
+```{r load regression data}
+# Load Data (which will be used in regression)
+phenotype_basic <- read.csv(file.path(rosmap_path,'phenotype_basic.csv'), header = TRUE)
+data_clinical <- read.csv(file.path(rosmap_path,'ROSMAP_clinical.csv'), header = TRUE)
+
+# setting variables for regression model
+regression <- phenotype_basic %>%
+  dplyr::select(projid,msex,age_bl,age_death,educ,pmi,scaled_to,apoe_genotype,
+                amyloid,tangles,nft,plaq_d,plaq_n,
+                tdp_st4,cvda_4gp2,ci_num2_gct,ci_num2_mct,
+                arteriol_scler,caa_4gp,dlbdx,
+                cogdx,ad_reagan) %>%
+  mutate(amyloid_sqrt = sqrt(amyloid),
+         tangles_sqrt = sqrt(tangles),
+         plaq_d_sqrt = sqrt(plaq_d),
+         plaq_n_sqrt = sqrt(plaq_n),
+         nft_sqrt =sqrt(nft)
+         )
+regression$msex <- as.factor(regression$msex)
+regression$apoe4 <- as.factor(ifelse(regression$apoe_genotype %in% c(24,34,44),
+                            1,0))
+regression$ci_num2_gct <- as.factor(regression$ci_num2_gct)
+regression$ci_num2_mct <- as.factor(regression$ci_num2_mct)
+regression$ad_reagan <- as.factor(regression$ad_reagan)
+
+phenotype_long<-read.csv(file.path(rosmap_path,'phenotype_long.csv'), header = TRUE)
+all.last <- lapply(unique(phenotype_long$projid), function(id){
+  ss <- subset(phenotype_long, projid==id & !is.na(cogn_global))
+  max.fu <- max(ss$fu_year)
+  return(ss[which(ss$fu_year == max.fu),])
+})
+all.last<-do.call(rbind,all.last)
+all.last <- all.last%>%
+  dplyr::select(projid,fu_year, cogn_global,cogn_ep,cogn_wo,cogn_se,cogn_ps,cogn_po,cesdsum,r_depres)
+
+regression<- inner_join(regression,all.last,by='projid')
+regression$age_adj <- regression$age_death - (regression$age_bl + regression$fu_year)
+regression$age_adj <- ifelse(regression$age_adj <=0,0,regression$age_adj)
+
+# create a 2-column-df for mapping 2 types of ID's
+id_map <- data_clinical %>%
+  dplyr::select(projid,individualID)
+
+```
+
+```{r add slopes and resilience}
+cogn_traj <- read.csv(file.path(rosmap_path,'all_cognition_slopes.csv'), header = TRUE)
+cogn_traj <- cogn_traj %>%
+  dplyr::select(projid,cogn_global,cogn_ep,cogn_po,cogn_ps,cogn_se,cogn_wo) %>%
+  dplyr::rename(global_slope = cogn_global,
+                ep_slope = cogn_ep,
+                po_slope = cogn_po,
+                ps_slope = cogn_ps,
+                se_slope = cogn_se,
+                wo_slope = cogn_wo)
+
+regression <- left_join(regression,cogn_traj, by='projid')
+
+resid_model <- lm(data = regression,
+               cogn_global ~ nft_sqrt + plaq_d_sqrt + plaq_n_sqrt + dlbdx +  
+                 ci_num2_gct + ci_num2_mct + cvda_4gp2 + arteriol_scler + 
+                 caa_4gp + dlbdx + amyloid_sqrt)
+regression<-modelr::add_residuals(regression, resid_model, var = "resilience")
+```
+
+```{r creat parameter space}
+# Data types: RNA-seq(R), DNA-methylation(D), ChIP-seq(H), Proteomics-tmt(P), Metabolomics(M)
+
+# define a vector of data types, which will be used to locate matrices
+d_types <- c('R','D','H','P','M')
+
+# Define a parameter space
+param_space <- c()
+for (i in 1:length(d_types)){
+  m <-combn(d_types,i)
+  num <- dim(m)[2]
+  for (j in 1:num){
+    param <- paste(m[,j],collapse='')
+    param_space<- append(param_space,param)
+  }
+}
+
+# size of the parameter space, which will be looped over
+space_length <-length(param_space)
+```
+
+```{r define an empty datafram to write}
+# define an empty data frame 
+param_df <- data.frame(limit_by=character(), # given datatypes that limits sample size
+                 clust_num=integer(), # cluster number used (looped from 2 to 5)
+                 opt_est = integer(), # optimal cluster number given limit_by and snf_type
+                 snf_type=character(), # datatypes used in SNF, subset of limit_by
+                 sample = integer(), # sample size
+                 response = character(), # response variable
+                 p = numeric(), # p-value from F-test
+                 stringsAsFactors=FALSE) 
+
+```
+
+```{r define a path}
+alluv_path<-"C:/Users/yangmu/Desktop/rosmap/SNF sample analysis/alluv_df_compare/"
+```
+
+```{r gloabal vars}
+# create a list of distance matrices
+d_list <- list(rnaseq_d,methy_d,chipseq_d,prot_d,metabo_d)
+# define a parameter space for cluster number
+cluster_space <- c(2,3,4,5)
+# define a parameter for response variable
+
+
+
+response <- c('sex','age_adj','age_death','education','pmi','apoe4','scaled_to',
+              'amyloid','tangles','nft','plaque_d','plaque_n',
+              'tdp','cvda','gct','mct','arteriol','caa','lewy_body','ad_reagan',
+              'cogn_global','episodic_memory','work_memory','semantic_memory',
+              'perceptual_speed','perceptual_orient',
+              'global_slope','episodic_slope','work_slope','semantic_slope',
+              'speed_slope','orient_slope','resilience')
+
+# define a list of response variable + 'output'
+categorical <- c('msex','apoe4','ci_num2_gct',
+                 'ci_num2_mct','ad_reagan')
+
+reg_param <- c('msex','age_adj','age_death','educ','pmi','apoe4','scaled_to',
+               'amyloid_sqrt','tangles_sqrt','nft_sqrt','plaq_d_sqrt','plaq_n_sqrt',
+               'tdp_st4','cvda_4gp2','ci_num2_gct','ci_num2_mct','arteriol_scler',
+               'caa_4gp','dlbdx','ad_reagan',
+               'cogn_global','cogn_ep','cogn_wo','cogn_se','cogn_ps','cogn_po',
+               'global_slope','ep_slope','wo_slope','se_slope','ps_slope','po_slope',
+               'resilience',
+               'output')
+
+cognition_performance <- c('cogn_global','cogn_ep','cogn_wo','cogn_se','cogn_ps','cogn_po',
+               'global_slope','ep_slope','wo_slope','se_slope','ps_slope','po_slope',
+               'resilience')
+cognition_slopes<- c('global_slope','ep_slope','wo_slope','se_slope','ps_slope','po_slope')
+```
+
+  
+```{r actual code}  
+# The first layer of loop will be performed over parameter space
+for (i in c(1:31)){
+  # sample size is limited by elements in parameter space (limit_by)
+  l_types <- param_space[i]
+  # separate joint datatypes ('RD' to 'R' 'D' for example)
+  p_limit <- as.vector(strsplit(l_types,'')[[1]])
+  # update this list  of id based on joint datatypes
+  limit_list <- list()
+  # a parameter that locate datatypes accordingly
+  pos <- c(0,0,0,0,0)
+  # extract common patients and add position variable
+  for (i in 1:length(d_types)) {
+    if (d_types[i] %in% p_limit) {
+      # update with individual ID's
+      limit_list[[i]] <- rownames(d_list[[i]])
+      # update the position/dummy vector
+      pos[i]=1
+    }
+  }
+  # Now we do not need positions for ID's, reduce the length of the list
+  limit_list <- limit_list[!sapply(limit_list,is.null)]
+  # take intersection of the id
+  limit_id <- Reduce(intersect,limit_list)
+  # extract sample size
+  size <- length(limit_id)
+  
+  # define the sub-datatypes, which will be used for SNF (snf_types)
+  max_l <- length(p_limit)
+  # define a empty list for sub-datatype parameter space
+  limit_space <- c()
+  for (i in 1:max_l){
+    m <- combn(p_limit,i)
+    num <- dim(m)[2]
+    for (j in 1:num){
+    param <- paste(m[,j],collapse='')
+    limit_space<- append(limit_space,param)
+    }
+  }
+  # define the length of sub-datatype parameter space, looped by snf
+  limit_l <- length(limit_space)
+  print(limit_l)
+  
+  for (i in 1:limit_l){
+    # snf only tooks one joint datatype at a time
+    snf_types <- limit_space[i]
+    # seperate the joint datatype
+    limit <- strsplit(snf_types,'')[[1]]
+    # another position variable defined for snf
+    pos_sub <- c(0,0,0,0,0)
+    
+    # update position variable for sub-datatypes
+    # no need for id this time
+    for (i in 1:length(d_types)) {
+      if (d_types[i] %in% limit) {
+        pos_sub[i]=1
+      }
+    }
+    
+    # define snf inputs (list of affinity matrices)
+    snf_list <- list()
+    
+    
+    ########### newly added ##############
+    id_df <- data.frame(individualID = limit_id,
+                    stringsAsFactors = FALSE)
+    # update snf inputs
+    for (i in 1:5){
+      if (pos_sub[i]==1){
+        # only took col/rows for common patients
+        snf_list[[i]]<-d_list[[i]][(row.names(d_list[[i]]) %in% limit_id),(colnames(d_list[[i]]) %in% limit_id)]
+        # calculate affinity matrix
+        snf_list[[i]]<-affinityMatrix(snf_list[[i]],K,alpha)
+        # reorder patients id
+        snf_list[[i]] <- snf_list[[i]][limit_id,limit_id]
+        #print(dim(snf_list[[i]]))
+      }
+    }
+    
+    # Remove null component from empty sub-position
+    snf_list <- snf_list[!sapply(snf_list,is.null)]
+    
+    for (i in 1:length(cluster_space)) {
+      clust_num = cluster_space[i]
+      if (sum(pos_sub) == 1){
+        opt_est <- est_clust(snf_list[[1]])
+        # spectral clustering and attached to ID's
+        output<-spectralClustering(snf_list[[1]],clust_num)
+      } else{
+        # snf integration
+        snf = SNF(snf_list,K,T)
+        # estimate optimal cluster number
+        opt_est <- est_clust(snf)
+        # spectral clustering and attached to ID's
+        output<-spectralClustering(snf,clust_num)
+      }
+      
+      cat_var <- data.frame(individualID=limit_id,output)
+      #####################write cluster result##################################
+      id_df <- inner_join(id_df,cat_var,by = 'individualID')
+      names(id_df)[ncol(id_df)] <- paste0("clustnum", i+1)  
+      ###########################################################################
+      # Merge SNF output to regression data
+      cat_var <- left_join(cat_var,id_map,by='individualID')
+      reg_part <- left_join(cat_var,regression,by ='projid')
+      reg_part['output']<-lapply(reg_part['output'],factor)
+      reg_part <- reg_part[,reg_param]
+      for (i in 8:length(response)){
+          if(reg_param[i] %in% categorical){
+            
+            # tryCatch to skip errors due to cluster size
+            tryCatch({
+            # glm family = binary
+            clust_model <- glm(data = reg_part, 
+                               reg_part[,i]~msex+age_death+pmi+scaled_to+apoe4+educ+output, family = binomial())
+            # F test
+            F_test<-anova(clust_model, test = 'Chisq')
+            p_val <- F_test["output","Pr(>Chi)"]
+            # update data frame
+            new_row <- c(l_types,clust_num,opt_est,snf_types,size,response[i],p_val)
+            param_df[nrow(param_df)+1,] <- new_row
+            },error = function(e){})
+          } else {
+            tryCatch({
+              # adjust for latency effect if parameter is cognitive performance
+              if (reg_param[i] %in% cognition_performance){
+                clust_model <- lm(data = reg_part, 
+                                  reg_part[,i]~age_adj+msex+age_death+pmi+scaled_to+apoe4+educ+output) 
+              } else {
+                clust_model <- lm(data = reg_part, reg_part[,i]~msex+age_death+pmi+scaled_to+apoe4+educ+output)
+              }
+              # F test
+              F_test<-anova(clust_model, test = 'F')
+              p_val <- F_test["output","Pr(>F)"]
+              # update data frame
+              new_row <- c(l_types,clust_num,opt_est,snf_types,size,response[i],p_val)
+              param_df[nrow(param_df)+1,] <- new_row
+            },error = function(e){})
+          }
+        }
+    }
+    write.csv(id_df, paste0(alluv_path,snf_types,"_limitby_",l_types,".csv"), row.names=F)
+  }
+}
+# safe the param_df dataframe for visualization
+#write.csv(param_df,"C:/Users/yangmu/Desktop/rosmap/SNF sample analysis/param_space_after_pca_v2.csv", row.names = TRUE)
+```
+
+```{r NMI}
+SNFtool::estimateNumberOfClustersGivenGraph(snf,NUMC = 2:8)
+NMI_input <- list(snf,snf_list[[1]],snf_list[[2]],snf_list[[3]],snf_list[[4]],snf_list[[5]])
+concordanceNetworkNMI(NMI_input,2)
+
+```
+
+```{r NMI rank feature}
+rnaseq<-rnaseq_s[rownames(snf),]
+methy<-methy_s[rownames(snf),]
+chipseq<-chipseq_s[rownames(snf),]
+prot<-prot_s[rownames(snf),]
+metabo<-metabo_s[rownames(snf),]
+dataL <- list(rnaseq,methy,chipseq,prot,metabo)
+
+NMI_score <- rankFeaturesByNMI(dataL,snf)
+
+```
+
+```{r}
+# the algorithm does not label the lists within rankedfeatures, so we will, for clarity
+names(NMI_score) <- c("NMI","rank")
+names(NMI_score$NMI)<- c("rnaseq","methy","chipseq","prot","metabo")
+names(NMI_score$rank) <- c("rnaseq","methy","chipseq","prot","metabo")
+str(NMI_score)
+# identify which feature set has the features with highest NMI
+lapply(NMI_score,function(x) { lapply(x,function(y) { range(y) })})
+
+```
+
+```{r call top10 features}
+top10_rna <- c()
+top10_dna <- c()
+top10_histone <- c()
+
+for (i in 1:10){
+  top10_rna <- append(top10_rna,
+         colnames(Data_rnaseq)[which(NMI_score$rank[[1]] %in% c(i))])
+  top10_dna <- append(top10_dna,
+         colnames(Data_methylation)[which(NMI_score$rank[[2]] %in% c(i))])
+  top10_histone <- append(top10_histone,
+                          colnames(Data_chipseq)[which(NMI_score$rank[[3]] %in% c(i))])
+}
+
+
+feature_list <- c(top10_rna,top10_dna,top10_histone)
+```
+
