@@ -25,13 +25,13 @@ library(ggalluvial)
 ```{r load snf data}
 # File path on scc: /external/rprshnas01/kcni/mwang/rosmap/
 rosmap_path<-'C:/Users/yangmu/Desktop/rosmap/'
-Data_chipseq<-read.csv(file.path(rosmap_path,'Chipseq_ready.csv'),row.names = 1, header = TRUE)
-Data_methylation<-read.csv(file.path(rosmap_path,'Methylation_ready.csv'),row.names = 1, header = TRUE)
+#Data_chipseq<-read.csv(file.path(rosmap_path,'Chipseq_ready.csv'),row.names = 1, header = TRUE)
+#Data_methylation<-read.csv(file.path(rosmap_path,'Methylation_ready.csv'),row.names = 1, header = TRUE)
 Data_rnaseq<-read.csv(file.path(rosmap_path,'counts_adj_ready.csv'),row.names = 1, header = TRUE)
-Data_tmt <- read.csv(file.path(rosmap_path,'tmt_ready.csv'),row.names = 1, header = TRUE)
-Data_metabo <- read.csv(file.path(rosmap_path,'metabolon_ready_0413.csv'),row.names = 1, header = TRUE)
+#Data_tmt <- read.csv(file.path(rosmap_path,'tmt_ready.csv'),row.names = 1, header = TRUE)
+#Data_metabo <- read.csv(file.path(rosmap_path,'metabolon_ready_0413.csv'),row.names = 1, header = TRUE)
 
-
+# Only do rnaseq if using PCA ouptuts
 #####MODIFY DATAFRAMES################
 rnaseq_col <- rownames(Data_rnaseq)
 rnaseq_row <- colnames(Data_rnaseq)
@@ -39,29 +39,29 @@ Data_rnaseq<-t(Data_rnaseq)
 rownames(Data_rnaseq)<- rnaseq_row
 colnames(Data_rnaseq)<- rnaseq_col
 
-methy_col <- rownames(Data_methylation)
-methy_row <- colnames(Data_methylation)
-Data_methylation<-t(Data_methylation)
-rownames(Data_methylation)<- methy_row
-colnames(Data_methylation)<- methy_col
+#methy_col <- rownames(Data_methylation)
+#methy_row <- colnames(Data_methylation)
+#Data_methylation<-t(Data_methylation)
+#rownames(Data_methylation)<- methy_row
+#colnames(Data_methylation)<- methy_col
 
-chipseq_col <- rownames(Data_chipseq)
-chipseq_row <- colnames(Data_chipseq)
-Data_chipseq<-t(Data_chipseq)
-rownames(Data_chipseq)<- chipseq_row
-colnames(Data_chipseq)<- chipseq_col
+#chipseq_col <- rownames(Data_chipseq)
+#chipseq_row <- colnames(Data_chipseq)
+#Data_chipseq<-t(Data_chipseq)
+#rownames(Data_chipseq)<- chipseq_row
+#colnames(Data_chipseq)<- chipseq_col
 
-tmt_col <- rownames(Data_tmt)
-tmt_row <- colnames(Data_tmt)
-Data_tmt<-t(Data_tmt)
-rownames(Data_tmt)<- tmt_row
-colnames(Data_tmt)<- tmt_col
+#tmt_col <- rownames(Data_tmt)
+#tmt_row <- colnames(Data_tmt)
+#Data_tmt<-t(Data_tmt)
+#rownames(Data_tmt)<- tmt_row
+#colnames(Data_tmt)<- tmt_col
 
-meta_col <- rownames(Data_metabo)
-meta_row <- colnames(Data_metabo)
-Data_metabo<-t(Data_metabo)
-rownames(Data_metabo)<- meta_row
-colnames(Data_metabo)<- meta_col
+#meta_col <- rownames(Data_metabo)
+#meta_row <- colnames(Data_metabo)
+#Data_metabo<-t(Data_metabo)
+#rownames(Data_metabo)<- meta_row
+#colnames(Data_metabo)<- meta_col
 
 #############Data frames are in the format of patient x features going forward##################
 ```
@@ -89,7 +89,6 @@ Data_methylation <- Data_methylation[,(colnames(Data_methylation) %in% selected_
 resid_path<-'C:/Users/yangmu/Desktop/rosmap/SNF sample analysis'
 Data_chipseq<-read.csv(file.path(resid_path,'histone_resids.csv'),row.names = 1, header = TRUE)
 Data_methylation<-read.csv(file.path(resid_path,'dna_resids.csv'),row.names = 1, header = TRUE)
-#Data_rnaseq<-read.csv(file.path(resid_path,'rna_resids.csv'),row.names = 1, header = TRUE)
 Data_tmt <- read.csv(file.path(resid_path,'tmt_resids.csv'),row.names = 1, header = TRUE)
 Data_metabo <- read.csv(file.path(resid_path,'metabo_resids.csv'),row.names = 1, header = TRUE)
 
@@ -188,6 +187,7 @@ regression$ci_num2_gct <- as.factor(regression$ci_num2_gct)
 regression$ci_num2_mct <- as.factor(regression$ci_num2_mct)
 regression$ad_reagan <- as.factor(regression$ad_reagan)
 
+# importing cognitive measurements
 phenotype_long<-read.csv(file.path(rosmap_path,'phenotype_long.csv'), header = TRUE)
 all.last <- lapply(unique(phenotype_long$projid), function(id){
   ss <- subset(phenotype_long, projid==id & !is.na(cogn_global))
@@ -198,6 +198,7 @@ all.last<-do.call(rbind,all.last)
 all.last <- all.last%>%
   dplyr::select(projid,fu_year, cogn_global,cogn_ep,cogn_wo,cogn_se,cogn_ps,cogn_po,cesdsum,r_depres)
 
+# joining table cross sectional and longitudinal data
 regression<- inner_join(regression,all.last,by='projid')
 regression$age_adj <- regression$age_death - (regression$age_bl + regression$fu_year)
 regression$age_adj <- ifelse(regression$age_adj <=0,0,regression$age_adj)
@@ -209,6 +210,7 @@ id_map <- data_clinical %>%
 ```
 
 ```{r add slopes and resilience}
+# import residuals
 cogn_traj <- read.csv(file.path(rosmap_path,'all_cognition_slopes.csv'), header = TRUE)
 cogn_traj <- cogn_traj %>%
   dplyr::select(projid,cogn_global,cogn_ep,cogn_po,cogn_ps,cogn_se,cogn_wo) %>%
@@ -221,6 +223,7 @@ cogn_traj <- cogn_traj %>%
 
 regression <- left_join(regression,cogn_traj, by='projid')
 
+# derive resilience
 resid_model <- lm(data = regression,
                cogn_global ~ nft_sqrt + plaq_d_sqrt + plaq_n_sqrt + dlbdx +  
                  ci_num2_gct + ci_num2_mct + cvda_4gp2 + arteriol_scler + 
@@ -470,7 +473,7 @@ NMI_score <- rankFeaturesByNMI(dataL,snf)
 
 ```
 
-```{r}
+```{r NMI}
 # the algorithm does not label the lists within rankedfeatures, so we will, for clarity
 names(NMI_score) <- c("NMI","rank")
 names(NMI_score$NMI)<- c("rnaseq","methy","chipseq","prot","metabo")
