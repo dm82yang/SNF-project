@@ -1,0 +1,417 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r load packages}
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(ggplot2)
+library(ggpubr)
+library(ggfortify)
+library(SNFtool)
+library(data.table)
+library(RColorBrewer)
+library(plyr)
+library(vcd)
+library(UpSetR)
+library(MASS)
+library(alluvial)
+library(ggalluvial)
+library(lm.beta)
+library(reghelper)
+``` 
+
+```{r}
+rosmap_path<-'C:/Users/yangmu/Desktop/rosmap/'
+alluv_path<-"C:/Users/yangmu/Desktop/rosmap/SNF sample analysis/alluv_df"
+clust_output <- read.csv(file.path(alluv_path,'RDH_limitby_RDH.csv'), header = TRUE)
+```
+
+```{r load regression data}
+# Load Data (which will be used in regression)
+phenotype_basic <- read.csv(file.path(rosmap_path,'phenotype_basic.csv'), header = TRUE)
+data_clinical <- read.csv(file.path(rosmap_path,'ROSMAP_clinical.csv'), header = TRUE)
+
+# setting variables for regression model
+regression <- phenotype_basic %>%
+  dplyr::select(projid,msex,age_bl,age_death,educ,pmi,scaled_to,apoe_genotype,
+                amyloid,tangles,nft,plaq_d,plaq_n,
+                tdp_st4,cvda_4gp2,ci_num2_gct,ci_num2_mct,
+                arteriol_scler,caa_4gp,dlbdx,
+                cogdx,ad_reagan) %>%
+  mutate(amyloid_sqrt = sqrt(amyloid),
+         tangles_sqrt = sqrt(tangles),
+         plaq_d_sqrt = sqrt(plaq_d),
+         plaq_n_sqrt = sqrt(plaq_n),
+         nft_sqrt =sqrt(nft)
+         )
+regression$msex <- as.factor(regression$msex)
+regression$apoe4 <- as.factor(ifelse(regression$apoe_genotype %in% c(24,34,44),
+                            1,0))
+regression$ci_num2_gct <- as.factor(regression$ci_num2_gct)
+regression$ci_num2_mct <- as.factor(regression$ci_num2_mct)
+regression$ad_reagan <- as.factor(regression$ad_reagan)
+
+phenotype_long<-read.csv(file.path(rosmap_path,'phenotype_long.csv'), header = TRUE)
+all.last <- lapply(unique(phenotype_long$projid), function(id){
+  ss <- subset(phenotype_long, projid==id & !is.na(cogn_global))
+  max.fu <- max(ss$fu_year)
+  return(ss[which(ss$fu_year == max.fu),])
+})
+all.last<-do.call(rbind,all.last)
+all.last <- all.last%>%
+  dplyr::select(projid,fu_year,cogn_global,cogn_ep,cogn_wo,cogn_se,cogn_ps,cogn_po,cesdsum,r_depres)
+
+regression<- inner_join(regression,all.last,by='projid')
+regression$age_adj <- regression$age_death - (regression$age_bl + regression$fu_year)
+regression$age_adj <- ifelse(regression$age_adj <=0,0,regression$age_adj)
+
+# create a 2-column-df for mapping 2 types of ID's
+id_map <- data_clinical %>%
+  dplyr::select(projid,individualID)
+
+# Cognitive trajectory
+cogn_traj <- read.csv(file.path(rosmap_path,'all_cognition_slopes.csv'), header = TRUE)
+cogn_traj <- cogn_traj %>%
+  dplyr::select(projid,cogn_global,cogn_ep,cogn_po,cogn_ps,cogn_se,cogn_wo) %>%
+  dplyr::rename(global_slope = cogn_global,
+                ep_slope = cogn_ep,
+                po_slope = cogn_po,
+                ps_slope = cogn_ps,
+                se_slope = cogn_se,
+                wo_slope = cogn_wo)
+
+regression <- left_join(regression,cogn_traj, by='projid')
+
+# resilience measures
+resid_model <- lm(data = regression,
+               cogn_global ~ nft_sqrt + plaq_d_sqrt + plaq_n_sqrt + dlbdx +  
+                 ci_num2_gct + ci_num2_mct + cvda_4gp2 + arteriol_scler + 
+                 caa_4gp + dlbdx + amyloid_sqrt)
+regression<-modelr::add_residuals(regression, resid_model, var = "resilience")
+```
+
+```{r}
+clust_output <- inner_join(clust_output, id_map, by='individualID') 
+regression <- inner_join(clust_output, regression, by ='projid')
+coln <- c('clustnum2','clustnum3','clustnum4','clustnum5')
+regression[coln] <- lapply(regression[coln], factor)
+```
+
+```{r}
+# define an empty data frame 
+regression_df <- data.frame(response = character(), # response variable
+                 clust_num=integer(), # number of clusters
+                 clust = integer(), # which cluster
+                 coef = numeric(), # coef of the cluster
+                 se = numeric(), # std error correspond to the cluster
+                 p = numeric(), # p-value from regression model
+                 clust_size = integer(),
+                 stringsAsFactors=FALSE) 
+
+```
+
+```{r}
+
+# define a list of response variable + 'output'
+categorical <- c('msex','apoe4','ci_num2_gct',
+                 'ci_num2_mct','ad_reagan')
+
+reg_param <- c('msex','age_adj','age_death','educ','pmi','apoe4','scaled_to',
+               'amyloid_sqrt','tangles_sqrt','nft_sqrt','plaq_d_sqrt','plaq_n_sqrt',
+               'tdp_st4','cvda_4gp2','ci_num2_gct','ci_num2_mct','arteriol_scler',
+               'caa_4gp','dlbdx','ad_reagan',
+               'cogn_global','cogn_ep','cogn_wo','cogn_se','cogn_ps','cogn_po',
+               'global_slope','ep_slope','wo_slope','se_slope','ps_slope','po_slope',
+               'resilience')
+
+writen_param <-  c('msex','age_adj','age_death','educ','pmi',"APOE-E4","scaled_to",
+                   "Amyloid-Beta","Paired Helical Filament Tau","Neurofibrillary Tangles",
+                   "Diffuse Plaque Burden","Neuritic Plaque Burden","TDP-43",
+                   "Cerebral Atherosclerosis Ratings", "Cerebral Amyloid Angiopathy",
+                   "Arteriolosclerosis","Chronic Microinfarcts", 
+                   "Gross Chronic Cerebral Infarctions","Lewy Body Disease","NIA-Reagan Diagnosis",
+                   "Global Cognition","Episodic Memory","Semantic Memory",
+                   "Work Memory","Perceptual Speed","Perceptual Orientation","Global Cognition Slope",
+                   "Episodic Memory Slope","Work Memory Slope","Semantic Memory Slope",
+                   "Perceptual Speed Slope","Perceptual Orientation Slope","Resilience")
+
+cognition_performance <- c('cogn_global','cogn_ep','cogn_wo','cogn_se','cogn_ps','cogn_po',
+               'global_slope','ep_slope','wo_slope','se_slope','ps_slope','po_slope',
+               'resilience')
+cognition_slopes<- c('global_slope','ep_slope','wo_slope','se_slope','ps_slope','po_slope')
+```
+
+```{r filter on regression}
+five_in_three <- clust_output %>%
+  dplyr::filter((clustnum3==3) & (clustnum5 %in% c(3,4,5)))
+ideal_id <- five_in_three$individualID
+regression <- regression %>%
+  filter(!(individualID %in% ideal_id)) %>%
+  dplyr::rename(cluster = clustnum5)
+```
+
+```{r partial}
+for (i in 8:(length(reg_param))){
+  if(reg_param[i] %in% categorical){
+    y=reg_param[i]
+    logistic_model <- glm(regression_ideal[,y] ~ cluster + scaled_to + apoe4 + msex + pmi + age_death + educ, data=regression_ideal,
+                 family = binomial(link = "logit"))
+    for (k in 2:3){
+      response_var = writen_param[i]
+      clust_num = 5
+      clust = k+2
+      coef = summary(logistic_model)$coef[k,1]
+      se= summary(logistic_model)$coef[k,2]
+      p= summary(logistic_model)$coef[k,4]
+      clust_size = sum(regression[,k] == k)
+      new_row <- c(response_var,clust_num,clust,coef,se,p, clust_size)
+      regression_df[nrow(regression_df)+1,] <- new_row
+    }
+  }
+  else {
+    y=reg_param[i]
+    if (y %in% cognition_performance) {
+      linear_model <- lm(regression_ideal[,y] ~ cluster + scaled_to + msex + pmi + age_death + educ + apoe4 + age_adj, data=regression_ideal) 
+    } else {
+      linear_model <- lm(regression_ideal[,y] ~ cluster + scaled_to + apoe4 + msex + pmi + age_death + educ, data=regression_ideal)
+    }
+    linear_model <- lm.beta(linear_model)
+    for (k in 2:3){
+      response_var = writen_param[i]
+      clust_num = 5
+      clust = k+2
+      coef = summary(linear_model)$coefficients[k,1]
+      std.coef = summary(linear_model)$coefficients[k,2]
+      se= summary(linear_model)$coefficients[k,3]*(std.coef/coef)
+      p= summary(linear_model)$coefficients[k,5]
+      clust_size = sum(regression[,k] == k)
+      new_row <- c(response_var,clust_num,clust,std.coef,se,p,clust_size)
+      regression_df[nrow(regression_df)+1,] <- new_row
+      
+    }
+  }
+}
+```
+
+```{r}
+for (i in 8:(length(reg_param))){
+  if(reg_param[i] %in% categorical){
+    y=reg_param[i]
+    #print(y)
+    for (j in 2:5){
+      logistic_model <- glm(regression[,y] ~ regression[,j] + scaled_to + apoe4 + msex + pmi + age_death + educ, data=regression,
+                 family = binomial(link = "logit"))
+      for (k in 2:j){
+        response_var = writen_param[i]
+        clust_num = j
+        clust = k
+        coef = summary(logistic_model)$coef[k,1]
+        se= summary(logistic_model)$coef[k,2]
+        p= summary(logistic_model)$coef[k,4]
+        clust_size = sum(regression[,j] == k)
+        new_row <- c(response_var,clust_num,clust,coef,se,p, clust_size)
+        regression_df[nrow(regression_df)+1,] <- new_row
+      }
+    }
+  }
+  else {
+    for (j in 2:5){
+      y=reg_param[i]
+      if (y %in% cognition_performance) {
+        linear_model <- lm(regression[,y] ~ regression[,j] + scaled_to + msex + pmi + age_death + educ + apoe4 + age_adj, data=regression) 
+      } else {
+        linear_model <- lm(regression[,y] ~ regression[,j] + scaled_to + apoe4 + msex + pmi + age_death + educ, data=regression)
+      }
+      linear_model <- lm.beta(linear_model)
+      for (k in 2:j){
+        response_var = writen_param[i]
+        clust_num = j
+        clust = k
+        coef = summary(linear_model)$coefficients[k,1]
+        std.coef = summary(linear_model)$coefficients[k,2]
+        se= summary(linear_model)$coefficients[k,3]*(std.coef/coef)
+        p= summary(linear_model)$coefficients[k,5]
+        clust_size = sum(regression[,j] == k)
+        new_row <- c(response_var,clust_num,clust,std.coef,se,p,clust_size)
+        regression_df[nrow(regression_df)+1,] <- new_row
+      }
+    }
+  }
+}
+```
+
+
+```{r}
+
+response_ordered <- c('amyloid','tangles','plaque_d','plaque_n',
+                      'tdp','cvda','caa','arteriol','mct','gct',
+                      'lewy_body','ad_reagan','cogdx',
+                      'cogn_global','episodic_memory','semantic_memory',
+                      'work_memory','perceptual_speed','perceptual_orient')
+
+output_map <- c('Amyloid-Beta','Neurofibrillary Tangles','Diffuse Plaque Burden',
+                'Neuritic Plaque Burden','TDP-43','Cerebral Atherosclerosis Rating','Cerebral Amyloid Angiopathy',
+                'Arteriolosclerosis','Chronic Microinfarcts','Gross Chronic Cerebral Infarctions',
+                'Lewy Body disease','NIA-Reagan Diagnosis','Cognitive Diagnostic',
+                'Global Cognition','Episodic Memory','Semantic Memory',
+                'Work Memory','Perceptual Speed','Perceptual Orientation')
+
+
+```
+
+
+
+
+
+```{r plot data}
+pvalues <- c(1.859347e-04, 1.170942e-03, 9.137955e-03
+, 2.899806e-04, 4.003426e-03)
+p.adjust(pvalues,method="bonferroni")
+last_measure <- c('Episodic Memory','Semantic Memory','Work Memory','Perceptual Speed','Perceptual Orientation')
+longitudinal_measure <- c('Episodic Memory Slope','Semantic Memory Slope','Work Memory Slope','Perceptual Speed Slope','Perceptual Orientation Slope')
+global_measure <- c("Global Cognition","Global Cognition Slope")
+ad_measure <- c('Amyloid-Beta','Neuritic Plaque Burden')
+  
+#regression_df$output <- plyr::mapvalues(regression_df$response, 
+#          from=response_ordered, 
+#          to=output_map)
+plot_df<-regression_df %>%
+  mutate(coef = as.numeric(coef),
+         se = as.numeric(se),
+         p = as.numeric(p)) %>%
+  filter(clust_num==5)%>%
+  filter(response %in% c(last_measure,longitudinal_measure,global_measure,ad_measure))
+
+dummy_df <- plot_df %>%
+  group_by(response) %>%
+  slice(1) %>%
+  mutate(clust = 1,
+         coef = 0,
+         se = 0) %>%
+  mutate(clust = as.factor(clust))
+
+plot_df <- dplyr::bind_rows(plot_df, dummy_df)
+```
+
+```{r global}
+#pvalues 0.035, 0.017
+plot_df %>%
+  dplyr::rename(Subtype = clust) %>%
+  filter(response %in% c('Global Cognition Slope')) %>%
+  ggplot(aes(fill = Subtype,x=response,y= coef)) +
+  geom_bar(position="dodge", stat="identity") + 
+  geom_errorbar(aes(ymin=coef-se, ymax=coef+se), width=.5,position=position_dodge(0.9))+
+  theme_bw()+
+  scale_fill_brewer(palette="PuBuGn") +
+  scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 10))+
+  labs(title = "Global Cognition Slopes Associations with Three-Modality Subtypes", x = '', y = "Regression Coefficients") +
+  #annotate("text", x = "Global Cognition", y = 0.1, label="adj p-val = 1", color = "darkcyan",size=3.2)+
+  annotate("text", x = "Global Cognition Slope", y = 0.14, label="adj p-val = 0.0004", color = "darkcyan",size=3.2)
+```
+
+
+```{r plot}
+plot_df %>%
+  dplyr::rename(Subtype = clust) %>%
+  filter(response %in% last_measure) %>%
+  ggplot(aes(fill = Subtype,x=response,y= coef)) +
+  geom_bar(position="dodge", stat="identity") + 
+  geom_errorbar(aes(ymin=coef-se, ymax=coef+se), width=.5,position=position_dodge(0.9))+
+  theme_bw()+
+  scale_fill_brewer(palette="PuBuGn") +
+  #theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust=0.5,
+  #                                 face = c('plain','bold','plain','bold','bold'))) +
+  scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 10))+
+  labs(title = "Measurements from Five Congnitive Domains Associations with Three-Modality Subtypes (Last Visit)", x = 'Cognitive Performances', y = "Regression Coefficients") +
+  annotate("text", x = "Episodic Memory", y = 0.15, label="adj p-val = 0.001", color = "darkcyan",size=3.2) +
+  annotate("text", x = "Perceptual Orientation", y = 0.15, label="adj p-val = 0.006", color = "darkcyan",size=3.2) +
+  annotate("text", x = "Perceptual Speed", y = 0.15, label="adj p-val = 0.05", color = "darkcyan",size=3.2) +
+  annotate("text", x = "Semantic Memory", y = 0.15, label="adj p-val = 0.001", color = "darkcyan",size=3.2) +
+  annotate("text", x = "Work Memory", y = 0.15, label="adj p-val = 0.02", color = "darkcyan",size=3.2) 
+```
+
+```{r plot}
+pvalues <- c(	2.023448e-03, 1.604163e-05, 8.669244e-04
+, 1.399596e-03, 2.528368e-03)
+p.adjust(pvalues,method="bonferroni")
+plot_df %>%
+  dplyr::rename(Subtype = clust) %>%
+  filter(response %in% longitudinal_measure) %>%
+  ggplot(aes(fill = Subtype,x=response,y= coef)) +
+  geom_bar(position="dodge", stat="identity") + 
+  geom_errorbar(aes(ymin=coef-se, ymax=coef+se), width=.5,position=position_dodge(0.9))+
+  theme_bw()+
+  scale_fill_brewer(palette="PuBuGn") +
+  #theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust=0.5,
+  #                                 face = c('plain','bold','bold','plain','plain'))) +
+  scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 10))+
+  labs(title = "Measurements from Five Congnitive Domains Associations with Three-Modality Subtypes (Rate of Decline)", x = 'Cognitive Performances', y = "Regression Coefficients") +
+  annotate("text", x = "Episodic Memory Slope", y = 0.2, label="adj p-val = 0.01", color = "darkcyan",size=3.2) +
+  annotate("text", x = "Perceptual Orientation Slope", y = 0.2, label="adj p-val = 0.0001", color = "darkcyan",size=3.2) +
+  annotate("text", x = "Perceptual Speed Slope", y = 0.2, label="adj p-val = 0.004", color = "darkcyan",size=3.2) +
+  annotate("text", x = "Semantic Memory Slope", y = 0.2, label="adj p-val = 0.007", color = "darkcyan",size=3.2) +
+  annotate("text", x = "Work Memory Slope", y = 0.2, label="adj p-val = 0.01", color = "darkcyan",size=3.2) 
+```
+
+
+```{r p values}
+rna_p <- param_df %>%
+  filter(snf_type =='3-Modal Integration') %>%
+  filter(limit_by =='RDH') %>%
+  filter(clust_num==3) %>%
+  filter(!(response %in% last_measure)) %>%
+  filter(!(response %in% longitudinal_measure))
+p.adjust(rna_p$p[1:16],method="bonferroni")
+```
+
+```{r Tukey}
+
+
+tukey.edit <- function (x, ...) 
+{
+    for (i in seq_along(x)) {
+        xi <- x[[i]][, -4, drop = FALSE]
+        yvals <- nrow(xi):1
+        dev.hold()
+        on.exit(dev.flush())
+        plot(c(xi[, "lwr"], xi[, "upr"]), rep.int(yvals, 2), 
+            type = "n", axes = FALSE, xlab = "", ylab = "", main = "", # changed main = NULL to main = ""
+            ...)
+        axis(1, ...)
+        axis(2, at = nrow(xi):1, labels = dimnames(xi)[[1L]], 
+            srt = 0, ...)
+        abline(h = yvals, lty = 1, lwd = 0.5, col = "lightgray")
+        abline(v = 0, lty = 2, lwd = 0.5, ...)
+        segments(xi[, "lwr"], yvals, xi[, "upr"], yvals, ...)
+        segments(as.vector(xi), rep.int(yvals - 0.1, 3), as.vector(xi), 
+            rep.int(yvals + 0.1, 3), ...)
+        title(xlab = paste("Differences in mean levels of", 
+            names(x)[i])) # removed main from here
+        box()
+    }
+}
+
+regression <- regression %>%
+  dplyr::rename(subtype = clustnum5)
+global_cogn_model <- aov(cogn_global~subtype, data=regression)
+TukeyHSD(global_cogn_model, conf.level=.95)
+global_slope_model <- aov(global_slope~subtype, data=regression)
+TukeyHSD(global_slope_model, conf.level=.95)
+
+ep_model <- aov(cogn_ep~subtype, data=regression)
+se_model <- aov(cogn_se~subtype, data=regression)
+wo_model <- aov(cogn_wo~subtype, data=regression)
+po_model <- aov(cogn_po~subtype, data=regression)
+ps_model <- aov(cogn_ps~subtype, data=regression)
+
+ep_slope_model <- aov(ep_slope~subtype, data=regression)
+se_slope_model <- aov(se_slope~subtype, data=regression)
+wo_slope_model <- aov(wo_slope~subtype, data=regression)
+po_slope_model <- aov(po_slope~subtype, data=regression)
+ps_slope_model <- aov(ps_slope~subtype, data=regression)
+```
+
