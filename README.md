@@ -1,5 +1,11 @@
 # SNF-project
-## The param_loop_LRT file contains the main body of the analysis.
+## Visulization
+
+## Data processing
+
+## Main Analysis
+
+
 ### Regression analysis and SNF was conducted over several parameter space:
 ###  a) response variables
 ###  b) datatypes limiting sample size
