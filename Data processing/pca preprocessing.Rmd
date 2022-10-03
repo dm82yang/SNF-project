@@ -1,0 +1,238 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r load packages}
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(ggplot2)
+library(ggpubr)
+library(ggfortify)
+library(SNFtool)
+library(data.table)
+library(RColorBrewer)
+library(plyr)
+library(vcd)
+library(UpSetR)
+library(MASS)
+library(alluvial)
+library(ggalluvial)
+library(factoextra)
+```
+
+```{r load data}
+rosmap_path<-'C:/Users/yangmu/Desktop/rosmap/'
+Data_chipseq<-read.csv(file.path(rosmap_path,'Chipseq_ready.csv'),row.names = 1, header = TRUE)
+Data_methylation<-read.csv(file.path(rosmap_path,'Methylation_ready.csv'),row.names = 1, header = TRUE)
+Data_rnaseq<-read.csv(file.path(rosmap_path,'counts_adj_ready.csv'),row.names = 1, header = TRUE)
+Data_tmt <- read.csv(file.path(rosmap_path,'tmt_ready.csv'),row.names = 1, header = TRUE)
+Data_metabo <- read.csv(file.path(rosmap_path,'metabolon_ready_0413.csv'),row.names = 1, header = TRUE)
+```
+
+```{r data manipulation}
+rnaseq_col <- rownames(Data_rnaseq)
+rnaseq_row <- colnames(Data_rnaseq)
+Data_rnaseq<-t(Data_rnaseq)
+rownames(Data_rnaseq)<- rnaseq_row
+colnames(Data_rnaseq)<- rnaseq_col
+
+methy_col <- rownames(Data_methylation)
+methy_row <- colnames(Data_methylation)
+Data_methylation<-t(Data_methylation)
+rownames(Data_methylation)<- methy_row
+colnames(Data_methylation)<- methy_col
+
+chipseq_col <- rownames(Data_chipseq)
+chipseq_row <- colnames(Data_chipseq)
+Data_chipseq<-t(Data_chipseq)
+rownames(Data_chipseq)<- chipseq_row
+colnames(Data_chipseq)<- chipseq_col
+
+tmt_col <- rownames(Data_tmt)
+tmt_row <- colnames(Data_tmt)
+Data_tmt<-t(Data_tmt)
+rownames(Data_tmt)<- tmt_row
+colnames(Data_tmt)<- tmt_col
+
+meta_col <- rownames(Data_metabo)
+meta_row <- colnames(Data_metabo)
+Data_metabo<-t(Data_metabo)
+rownames(Data_metabo)<- meta_row
+colnames(Data_metabo)<- meta_col
+
+#############Feature Reduction for DNA-methylation data#########################
+# calculate variance for each feature (columns)
+var_methylation <- apply(Data_methylation, 2, var)
+var_methylation <- sort(var_methylation,decreasing = TRUE)
+
+# set a threshold of variance (look at feature numbers)
+var_methylation <- var_methylation[var_methylation>0.002]
+# feature selection
+selected_features<-attr(var_methylation, "names")
+Data_methylation <- Data_methylation[,(colnames(Data_methylation) %in% selected_features)]
+```
+
+```{r pca}
+library(ade4)
+
+data_L <- list(Data_rnaseq, Data_methylation, Data_chipseq, Data_metabo, Data_tmt)
+
+pca_fun <- function(x) {
+    pc <- prcomp(x, retx=TRUE, center=TRUE, scale.=TRUE)
+    pc
+}
+
+output <- lapply(data_L,pca_fun)
+
+pca_list <- lapply(output, function(x) x$x[,1:20])
+
+add_id <- function(x){
+  x <-as.data.frame(x)
+  x$individualID <- rownames(x)
+  x
+}
+pc_list <- lapply(pca_list,add_id)
+
+data_list <- lapply(Data_chipseq,add_id)
+Data_chipseq <- add_id(Data_chipseq)
+
+```
+
+
+```{r covariates}
+# Load Data (which will be used in regression)
+phenotype_basic <- read.csv(file.path(rosmap_path,'phenotype_basic.csv'), header = TRUE)
+data_clinical <- read.csv(file.path(rosmap_path,'ROSMAP_clinical.csv'), header = TRUE)
+
+# setting variables for regression model
+regression <- phenotype_basic %>%
+  dplyr::select(projid,msex,age_bl,age_death,educ,pmi,scaled_to) 
+regression$msex <- as.factor(regression$msex)
+regression$scaled_to <- as.factor(regression$scaled_to)
+
+
+# create a 2-column-df for mapping 2 types of ID's
+id_map <- data_clinical %>%
+  dplyr::select(projid,individualID)
+
+covar <- left_join(id_map,regression, by ='projid')
+
+```
+
+
+```{r test association}
+covariate <- c('age_death','pmi','msex','scaled_to')
+  
+assoc_test <- function(x,cov) {
+  x <- inner_join(x,covar,by ='individualID')
+  p_val_list <- c()
+  for (i in 1:20){
+    if (cov %in% c('msex','scaled_to')){
+      if ( shapiro.test(x[, i])$p.value > 0.05){
+          a <- summary(aov(x[,i] ~ x[,cov], data = x))
+          p_val  <- a[[1]][1, "Pr(>F)"]  
+        } else {
+          a <- kruskal.test(x[, i] ~ x[, cov], data = x)
+          p_val <- a$p.value 
+        }
+    } else {
+      corr <- cor.test(x[,i], x[,cov], use="pairwise.complete.obs")
+      p_val <- corr$p.value
+    }
+    p_val_list <- append(p_val_list, p_val)
+  }
+  p_val_list
+}
+
+test_msex <- lapply(pc_list,assoc_test, cov='msex')
+test_study <- lapply(pc_list,assoc_test, cov='scaled_to')
+test_age <- lapply(pc_list,assoc_test, cov='age_death')
+test_pmi <- lapply(pc_list,assoc_test, cov='pmi')
+
+test_L <- list(test_msex, test_study, test_age, test_pmi)
+```
+
+```{r organize result}
+row_list <- c()
+for (i in 1:20){
+  a<-paste0('PC',i)
+  row_list <- append(row_list,a)
+}
+corr_list <-list()
+for (i in 1:5){
+  mat <- matrix(,nrow = 20, ncol = 4)
+  for (j in 1:length(test_L)){
+    mat[,j]<-test_L[[j]][[i]]
+  }
+  mat <- as.data.frame(mat)
+  colnames(mat) <- c('sex','study','age','pmi')
+  rownames(mat) <- row_list
+  mat$PCs <- rownames(mat)
+  mat$PCs <- factor(mat$PCs, levels = rownames(mat))
+  corr_list <- append(corr_list, list(mat))
+}
+
+```
+
+```{r visualize result}
+
+## reshape data (tidy/tall form)
+long <- melt(setDT(corr_list[[5]]), id.vars = c("PCs"), variable.name = "cov")
+
+## plot data
+ggplot(long, aes(cov, PCs)) +
+    geom_tile(aes(fill = -log10(value))) + 
+    geom_text(aes(label = round(-log10(value), 2))) +
+    scale_fill_gradient(low = "white", high = "red",limits = c(0,10)) +
+    labs(title ="RNAseq")
+```
+
+
+2-DNA methyl:all
+3-Histone Acetylation:all(do it again)
+4-Metabolomic:all
+5-Proteomic:all
+
+only run the result for histone acetylation and proteomic
+```{r residual data}
+extract_resid <- function(x, cov_list) {
+  if (length(cov_list)==0){
+    x
+  } else{
+    save.row <-rownames(x)
+    #print(save.row)
+    loop_num <- ncol(x)-1
+    x <- left_join(x,covar,by ='individualID')
+    for (i in 1:loop_num){
+      reg.formula <- paste( colnames(x)[i], '~', paste( cov_list, collapse=' + ' ) )
+      reg.formula <- as.formula(reg.formula)
+      model <- lm(reg.formula, data = x)
+      x<-modelr::add_residuals(x, model, var = colnames(x)[i])
+    }
+    print(dim(x))
+    rownames(x) <- save.row
+    x[,1:loop_num]
+  }
+}
+histone_df<-extract_resid(Data_chipseq,c('age_death','pmi','msex','scaled_to'))
+write.csv(histone_df,"C:/Users/yangmu/Desktop/rosmap/SNF sample analysis/histone_resids.csv", row.names = TRUE)
+```
+
+
+
+```{r visualize pca}
+par(mfrow = c(3, 2))
+fviz_eig(output[[1]], addlabels=TRUE, hjust = -0.3, ncp=20)+ labs(title = "RNAseq",
+         x = "Principal Components", y = "% of variances")
+fviz_eig(output[[2]], addlabels=TRUE, hjust = -0.3,ncp=20)+ labs(title = "DNA methylation",
+         x = "Principal Components", y = "% of variances")
+fviz_eig(output[[3]], addlabels=TRUE, hjust = -0.3,ncp=20)+ labs(title = "Histone Acetylation",
+         x = "Principal Components", y = "% of variances")
+fviz_eig(output[[4]], addlabels=TRUE, hjust = -0.3,ncp=20)+ labs(title = "Metabolomic",
+         x = "Principal Components", y = "% of variances")
+fviz_eig(output[[5]], addlabels=TRUE, hjust = -0.3,ncp=20)+ labs(title = "Proteomic",
+         x = "Principal Components", y = "% of variances")
+
+```
