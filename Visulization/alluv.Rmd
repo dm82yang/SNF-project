@@ -1,0 +1,86 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r load packages}
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(ggplot2)
+library(ggpubr)
+library(ggfortify)
+library(SNFtool)
+library(data.table)
+library(RColorBrewer)
+library(plyr)
+library(vcd)
+library(UpSetR)
+library(MASS)
+library(alluvial)
+library(ggalluvial)
+alluv_path<-"C:/Users/yangmu/Desktop/rosmap/SNF sample analysis/alluv_df"
+compare_path <- "C:/Users/yangmu/Desktop/rosmap/SNF sample analysis/alluv_df_compare"
+coln <- c('clustnum2','clustnum3','clustnum4','clustnum5')
+```
+
+```{r read data}
+after_pca<-read.csv(file.path(alluv_path,"RDHPM_limitby_RDHPM.csv"),  header = TRUE)
+after_pca <- after_pca %>%
+  dplyr::select(individualID,clustnum2)%>%
+  dplyr::rename(after_pca = clustnum2) %>%
+  dplyr::mutate(after_pca = as.factor(after_pca))
+
+
+before_pca<-read.csv(file.path(compare_path,"RDHPM_limitby_RDHPM.csv"),  header = TRUE)
+before_pca <- before_pca %>%
+  dplyr::select(individualID,clustnum2)%>%
+  dplyr::rename(before_pca = clustnum2) %>%
+  dplyr::mutate(before_pca = as.factor(before_pca))
+alluv_data <- left_join(after_pca,before_pca, by = 'individualID')
+```
+
+```{r plot}
+alluv_data %>%
+    group_by(before_pca,after_pca) %>%
+    dplyr::mutate(freq=n()) %>%
+    slice(1)%>%
+    ungroup %>%
+    ggplot(aes(y=freq,axis1=before_pca,axis2=after_pca)) + 
+    geom_alluvium(aes(fill = before_pca))+
+    geom_stratum(width = 1/12, fill = "white", color = "grey")+
+    geom_label(stat = "stratum", aes(label = after_stat(stratum))) +
+    scale_x_discrete(limits = c('Subtypes before PCA','Subtypes after PCA'), expand = c(.05, .05)) + 
+    labs(title = 'Multi-Omics data post-processing Test')
+```
+
+```{r define an alluvial function}
+alluv<-function(dfname){
+  df <- read.csv(file.path(alluv_path,paste0(dfname,".csv")),row.names = 1, header = TRUE)
+  df[coln] <- lapply(df[coln], factor)
+  df %>%
+    group_by(clustnum2,clustnum3,clustnum4,clustnum5) %>%
+    dplyr::mutate(freq=n()) %>%
+    slice(1)%>%
+    ungroup %>%
+    ggplot(aes(y=freq,axis1=clustnum2,axis2=clustnum3,
+               axis3=clustnum4,axis4=clustnum5)) + 
+    geom_alluvium(aes(fill = clustnum2))+
+    geom_stratum(width = 1/12, fill = "black", color = "grey")+
+    geom_label(stat = "stratum", aes(label = after_stat(stratum))) +
+    scale_x_discrete(limits = coln, expand = c(.05, .05)) + 
+    labs(title = dfname)
+}
+```
+
+
+```{r alluvial RNAseq}
+alluv("P_limitby_P")
+alluv("M_limitby_M")
+alluv("H_limitby_H")
+alluv("D_limitby_D")
+alluv("R_limitby_R")
+
+```
+
